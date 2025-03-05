@@ -173,7 +173,7 @@ async fn merge(Json(request): Json<AutoMergeRequest>) -> Result<&'static str, St
             }
 
             for check in checks.check_runs {
-                let positive_statuses = ["success", "skipped"];
+                let positive_statuses = ["success", "skipped", "neutral"];
                 let conclusion = check.conclusion.as_ref().unwrap().as_str();
 
                 if !positive_statuses.contains(&conclusion) {
