@@ -4,7 +4,7 @@ use std::hash::{BuildHasherDefault, DefaultHasher};
 use axum::{
     http::StatusCode,
     response::{Html, Form},
-    routing::{get, options},
+    routing::{get, any},
     Router,
 };
 use clap::Parser;
@@ -228,7 +228,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(root))
-        .route("/merge", options(merge));
+        .route("/merge", any(merge));
 
     let listener = tokio::net::TcpListener::bind(CLI_OPTIONS.get().unwrap().listen)
         .await
