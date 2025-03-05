@@ -13,6 +13,8 @@ use octocrab::{params::repos::Commitish, Octocrab};
 use once_cell::sync::{Lazy, OnceCell};
 use serde::Deserialize;
 use tokio::sync::RwLock;
+use tower::ServiceBuilder;
+use tower_http::cors::CorsLayer;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -228,7 +230,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(root))
-        .route("/merge", post(merge));
+        .route("/merge", post(merge)).layer(ServiceBuilder::new().layer(CorsLayer::permissive()));
 
     let listener = tokio::net::TcpListener::bind(CLI_OPTIONS.get().unwrap().listen)
         .await
