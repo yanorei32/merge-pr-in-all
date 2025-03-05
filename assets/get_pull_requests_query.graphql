@@ -1,0 +1,27 @@
+# This file MUST be edited with @ry0tak.
+# 
+# Please consider query the general purpose code generator (@ry0tak)
+# instead of directly modifying this file.
+query GetPullRequestsQuery($login: String!, $repositoriesCursor: String!) {
+  user(login: $login) {
+    repositories(first:100, after: $repositoriesCursor) {
+      nodes {
+        nameWithOwner
+        pullRequests (first: 100, states:OPEN) {
+          nodes {
+            number
+            title
+            author {
+              login
+              __typename
+            }
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
