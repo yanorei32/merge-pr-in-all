@@ -1,0 +1,21 @@
+name: hadolint
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - '.github/workflows/hadolint.yml'
+
+jobs:
+  hadolint:
+    name: runner / hadolint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: hadolint
+        uses: reviewdog/action-hadolint@v1.48.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-pr-review
+          fail_on_error: true
+          filter_mode: nofilter

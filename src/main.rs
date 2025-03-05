@@ -1,13 +1,18 @@
-use clap::Parser;
-use graphql_client::{GraphQLQuery, Response};
-use octocrab::{
-    models::Repository,
-    params::{repos::Commitish, State},
-    Octocrab,
+use std::collections::HashSet;
+use std::hash::{BuildHasherDefault, DefaultHasher};
+
+use axum::{
+    http::StatusCode,
+    response::{Html, Json},
+    routing::{get, post},
+    Router,
 };
+use clap::Parser;
+use graphql_client::GraphQLQuery;
+use octocrab::{params::repos::Commitish, Octocrab};
 use once_cell::sync::{Lazy, OnceCell};
+use serde::Deserialize;
 use tokio::sync::RwLock;
-use tracing::info;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -16,12 +21,16 @@ struct Cli {
 
     #[arg(long, env, hide_env_values = true)]
     login: String,
+
+    #[arg(long, env, hide_env_values = true)]
+    listen: std::net::SocketAddr,
+
+    #[arg(long, env, hide_env_values = true)]
+    auth_token: String,
 }
 
 static PULL_REQUESTS: Lazy<RwLock<Vec<PullRequest>>> = Lazy::new(|| RwLock::new(vec![]));
 static CLI_OPTIONS: OnceCell<Cli> = OnceCell::new();
-
-type BigInt = String;
 
 #[derive(GraphQLQuery)]
 #[graphql(
@@ -30,41 +39,6 @@ type BigInt = String;
     response_derives = "Debug"
 )]
 pub struct GetPullRequestsQuery;
-
-async fn fetch_associated_repositories(o: &Octocrab) -> Vec<Repository> {
-    let mut repositories = vec![];
-
-    for page in 1.. {
-        info!("Fetching repositories: {page}");
-
-        let repos = o
-            .current()
-            .list_repos_for_authenticated_user()
-            .sort("updated")
-            .per_page(100)
-            .page(page)
-            .send()
-            .await
-            .unwrap();
-
-        // for dynamically changed
-        if repos.items.is_empty() {
-            break;
-        }
-
-        let is_last = repos.next.is_none();
-
-        repositories.extend(repos);
-
-        if is_last {
-            break;
-        }
-    }
-
-    info!("{} Repositories collected!", repositories.len());
-
-    repositories
-}
 
 #[derive(Debug, Clone)]
 struct PullRequest {
@@ -105,11 +79,7 @@ async fn refresh_pull_request() {
 
         let data = response.unwrap().data.unwrap().user.unwrap();
 
-        for repo in data
-            .repositories
-            .nodes
-            .unwrap()
-        {
+        for repo in data.repositories.nodes.unwrap() {
             let repo = repo.unwrap();
             for pr in repo.pull_requests.nodes.unwrap() {
                 let pr = pr.unwrap();
@@ -130,7 +100,114 @@ async fn refresh_pull_request() {
         repositories_cursor = data.repositories.page_info.end_cursor.unwrap();
     }
 
+    let title_set: HashSet<_, BuildHasherDefault<DefaultHasher>> =
+        HashSet::from_iter(pull_requests.iter().map(|v| v.title.as_str()));
+
+    tracing::info!(
+        "{} pull-requests registered ({} unique titles)",
+        pull_requests.len(),
+        title_set.len(),
+    );
+
     *PULL_REQUESTS.write().await = pull_requests;
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AutoMergeRequest {
+    login: String,
+    title: String,
+    auth_token: String,
+}
+
+async fn merge(Json(request): Json<AutoMergeRequest>) -> Result<&'static str, StatusCode> {
+    if CLI_OPTIONS.get().unwrap().auth_token != request.auth_token {
+        return Err(StatusCode::IM_A_TEAPOT);
+    }
+
+    tracing::info!(
+        "Merge Requests Received! {}: {}",
+        request.login,
+        request.title
+    );
+
+    tokio::spawn(async move {
+        let octocrab = Octocrab::builder()
+            .personal_token(CLI_OPTIONS.get().unwrap().token.to_string())
+            .build()
+            .unwrap();
+
+        let prs = PULL_REQUESTS.read().await.clone();
+
+        let prs = prs
+            .iter()
+            .filter(|pr| &pr.login == &request.login)
+            .filter(|pr| &pr.title == &request.title);
+
+        'pr_loop: for pr in prs {
+            let (owner, repo) = pr.repository.as_str().split_once("/").unwrap();
+
+            tracing::info!("Start {owner}/{repo} #{}", pr.number);
+
+            let Ok(octo_pr) = octocrab.pulls(owner, repo).get(pr.number as u64).await else {
+                tracing::warn!("Failed to get known PR");
+                continue;
+            };
+
+            if pr.title != octo_pr.title.unwrap() {
+                tracing::warn!("PR title mismatch, maybe updated");
+                continue;
+            }
+
+            let head_sha = octo_pr.head.sha;
+
+            let checks = octocrab
+                .checks(owner, repo)
+                .list_check_runs_for_git_ref(Commitish(head_sha.to_owned()))
+                .send()
+                .await
+                .unwrap();
+
+            if checks.check_runs.is_empty() {
+                tracing::warn!("CI Doesn't configured");
+                continue;
+            }
+
+            for check in checks.check_runs {
+                let positive_statuses = ["success", "skipped"];
+                let conclusion = check.conclusion.as_ref().unwrap().as_str();
+
+                if !positive_statuses.contains(&conclusion) {
+                    tracing::warn!(
+                        "CI '{}' ({}) is not ready ({})",
+                        check.name,
+                        check.id,
+                        conclusion
+                    );
+
+                    continue 'pr_loop;
+                }
+            }
+
+            match octocrab
+                .pulls(owner, repo)
+                .merge(pr.number as u64)
+                .title("Auto merge! (merge-pr-in-all)")
+                .sha(head_sha)
+                .method(octocrab::params::pulls::MergeMethod::Merge)
+                .send()
+                .await
+            {
+                Ok(_) => tracing::info!("Ready for merge!"),
+                Err(e) => tracing::error!("Error occured: {e:?}"),
+            }
+        }
+    });
+
+    Ok("ok")
+}
+
+async fn root() -> Html<&'static str> {
+    Html("<h1>Merge PR In All!</h1>")
 }
 
 #[tokio::main]
@@ -141,64 +218,22 @@ async fn main() {
 
     CLI_OPTIONS.set(Cli::parse()).unwrap();
 
+    tracing::info!("Initializing...");
     refresh_pull_request().await;
 
     tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
         refresh_pull_request().await
     });
 
-    // response.data;
-    // println!("{response:#?}");
+    let app = Router::new()
+        .route("/", get(root))
+        .route("/merge", post(merge));
 
-    //
-    // let octocrab = Octocrab::builder()
-    //     .personal_token(config.token)
-    //     .build()
-    //     .unwrap();
-    //
-    // let repositories = fetch_associated_repositories(&octocrab).await;
-    //
-    // for repo in &repositories {
-    //     println!(" `- {}", repo.full_name.as_ref().unwrap());
-    //
-    //     let owner = repo.owner.as_ref().unwrap();
-    //
-    //     let prs = octocrab
-    //         .pulls(&owner.login, &repo.name)
-    //         .list()
-    //         .state(State::Open)
-    //         .send()
-    //         .await
-    //         .unwrap();
-    //
-    //     for pr in prs {
-    //         let author = pr.user.unwrap().login;
-    //
-    //         let head_sha = pr.head.sha;
-    //         let title = pr.title.unwrap();
-    //
-    //         let checks = octocrab
-    //             .checks(&owner.login, &repo.name)
-    //             .list_check_runs_for_git_ref(Commitish(head_sha.to_owned()))
-    //             .send()
-    //             .await
-    //             .unwrap();
-    //
-    //         println!("    `- {title} {author}");
-    //
-    //         if checks.check_runs.is_empty() {
-    //             println!("      `- CI、ないがち！ｗ");
-    //         }
-    //
-    //         for check in checks.check_runs {
-    //             println!(
-    //                 "      `- {} ({}) {}",
-    //                 check.name,
-    //                 check.id,
-    //                 check.conclusion.unwrap()
-    //             );
-    //         }
-    //     }
-    // }
+    let listener = tokio::net::TcpListener::bind(CLI_OPTIONS.get().unwrap().listen)
+        .await
+        .unwrap();
+
+    tracing::info!("Serving...");
+    axum::serve(listener, app).await.unwrap()
 }
