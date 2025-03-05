@@ -140,8 +140,8 @@ async fn merge(Json(request): Json<AutoMergeRequest>) -> Result<&'static str, St
 
         let prs = prs
             .iter()
-            .filter(|pr| &pr.login == &request.login)
-            .filter(|pr| &pr.title == &request.title);
+            .filter(|pr| pr.login == request.login)
+            .filter(|pr| pr.title == request.title);
 
         'pr_loop: for pr in prs {
             let (owner, repo) = pr.repository.as_str().split_once("/").unwrap();
