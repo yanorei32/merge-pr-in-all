@@ -3,8 +3,8 @@ use std::hash::{BuildHasherDefault, DefaultHasher};
 
 use axum::{
     http::StatusCode,
-    response::{Html, Json},
-    routing::{get, post},
+    response::{Html, Form},
+    routing::{get, options},
     Router,
 };
 use clap::Parser;
@@ -13,8 +13,6 @@ use octocrab::{params::repos::Commitish, Octocrab};
 use once_cell::sync::{Lazy, OnceCell};
 use serde::Deserialize;
 use tokio::sync::RwLock;
-use tower::ServiceBuilder;
-use tower_http::cors::CorsLayer;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -121,7 +119,7 @@ struct AutoMergeRequest {
     auth_token: String,
 }
 
-async fn merge(Json(request): Json<AutoMergeRequest>) -> Result<&'static str, StatusCode> {
+async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, StatusCode> {
     if CLI_OPTIONS.get().unwrap().auth_token != request.auth_token {
         return Err(StatusCode::IM_A_TEAPOT);
     }
@@ -230,7 +228,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(root))
-        .route("/merge", post(merge)).layer(ServiceBuilder::new().layer(CorsLayer::permissive()));
+        .route("/merge", options(merge));
 
     let listener = tokio::net::TcpListener::bind(CLI_OPTIONS.get().unwrap().listen)
         .await
