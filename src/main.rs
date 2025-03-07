@@ -73,10 +73,11 @@ async fn refresh_pull_request() {
 
     target_logins.push(octocrab.current().user().await.unwrap().login);
 
-    let mut repositories_cursor = "".to_string();
     let mut pull_requests = vec![];
 
     'login: for login in target_logins {
+        let mut repositories_cursor = "".to_string();
+
         loop {
             let request_body =
                 GetPullRequestsQuery::build_query(get_pull_requests_query::Variables {
