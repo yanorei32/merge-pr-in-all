@@ -2,14 +2,14 @@ use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, DefaultHasher};
 
 use axum::{
-    http::StatusCode,
-    response::{Html, Form},
-    routing::{get, any},
     Router,
+    http::StatusCode,
+    response::{Form, Html},
+    routing::{any, get},
 };
 use clap::Parser;
 use graphql_client::GraphQLQuery;
-use octocrab::{params::repos::Commitish, Octocrab};
+use octocrab::{Octocrab, params::repos::Commitish};
 use once_cell::sync::{Lazy, OnceCell};
 use serde::Deserialize;
 use tokio::sync::RwLock;
@@ -54,17 +54,40 @@ async fn refresh_pull_request() {
         .build()
         .unwrap();
 
+    let octocrab = Octocrab::builder()
+        .personal_token(CLI_OPTIONS.get().unwrap().token.to_string())
+        .build()
+        .unwrap();
+
+    // TODO: RyotaKが「100以上のOrgに所属している人なんて居ない」っていった！
+    let mut target_logins: Vec<_> = octocrab
+        .current()
+        .list_org_memberships_for_authenticated_user()
+        .send()
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|v| v.organization.login)
+        .collect();
+
+    target_logins.push(octocrab.current().user().await.unwrap().login);
+
     let mut repositories_cursor = "".to_string();
     let mut pull_requests = vec![];
 
-    loop {
-        let request_body = GetPullRequestsQuery::build_query(get_pull_requests_query::Variables {
-            login: CLI_OPTIONS.get().unwrap().login.to_string(),
-            repositories_cursor: repositories_cursor.to_string(),
-        });
+    for login in target_logins {
+        loop {
+            let request_body =
+                GetPullRequestsQuery::build_query(get_pull_requests_query::Variables {
+                    login: login.to_string(),
+                    repositories_cursor: repositories_cursor.to_string(),
+                });
 
-        let response: Result<graphql_client::Response<get_pull_requests_query::ResponseData>, _> =
-            client
+            let response: Result<
+                graphql_client::Response<get_pull_requests_query::ResponseData>,
+                _,
+            > = client
                 .post("https://api.github.com/graphql")
                 .header(
                     reqwest::header::AUTHORIZATION,
@@ -77,27 +100,28 @@ async fn refresh_pull_request() {
                 .json()
                 .await;
 
-        let data = response.unwrap().data.unwrap().user.unwrap();
+            let data = response.unwrap().data.unwrap().repository_owner.unwrap();
 
-        for repo in data.repositories.nodes.unwrap() {
-            let repo = repo.unwrap();
-            for pr in repo.pull_requests.nodes.unwrap() {
-                let pr = pr.unwrap();
+            for repo in data.repositories.nodes.unwrap() {
+                let repo = repo.unwrap();
+                for pr in repo.pull_requests.nodes.unwrap() {
+                    let pr = pr.unwrap();
 
-                pull_requests.push(PullRequest {
-                    login: pr.author.unwrap().login,
-                    title: pr.title,
-                    repository: repo.name_with_owner.clone(),
-                    number: pr.number,
-                })
+                    pull_requests.push(PullRequest {
+                        login: pr.author.unwrap().login,
+                        title: pr.title,
+                        repository: repo.name_with_owner.clone(),
+                        number: pr.number,
+                    })
+                }
             }
-        }
 
-        if !data.repositories.page_info.has_next_page {
-            break;
-        }
+            if !data.repositories.page_info.has_next_page {
+                break;
+            }
 
-        repositories_cursor = data.repositories.page_info.end_cursor.unwrap();
+            repositories_cursor = data.repositories.page_info.end_cursor.unwrap();
+        }
     }
 
     let title_set: HashSet<_, BuildHasherDefault<DefaultHasher>> =
@@ -135,6 +159,20 @@ async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, St
             .personal_token(CLI_OPTIONS.get().unwrap().token.to_string())
             .build()
             .unwrap();
+
+        // TODO: RyotaKが100以上のOrgに所属している人なんて居ないっていった！
+        let mut target_logins: Vec<_> = octocrab
+            .current()
+            .list_org_memberships_for_authenticated_user()
+            .send()
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|v| v.organization.login)
+            .collect();
+
+        target_logins.push(octocrab.current().user().await.unwrap().login);
 
         let prs = PULL_REQUESTS.read().await.clone();
 

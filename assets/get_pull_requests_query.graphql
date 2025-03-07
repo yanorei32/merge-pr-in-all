@@ -3,7 +3,7 @@
 # Please consider query the general purpose code generator (@ry0tak)
 # instead of directly modifying this file.
 query GetPullRequestsQuery($login: String!, $repositoriesCursor: String!) {
-  user(login: $login) {
+  repositoryOwner(login: $login) {
     repositories(first:100, after: $repositoriesCursor) {
       nodes {
         nameWithOwner
@@ -23,5 +23,6 @@ query GetPullRequestsQuery($login: String!, $repositoriesCursor: String!) {
         endCursor
       }
     }
+    __typename
   }
 }
