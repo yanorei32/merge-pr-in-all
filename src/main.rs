@@ -76,7 +76,7 @@ async fn refresh_pull_request() {
     let mut repositories_cursor = "".to_string();
     let mut pull_requests = vec![];
 
-    for login in target_logins {
+    'login: for login in target_logins {
         loop {
             let request_body =
                 GetPullRequestsQuery::build_query(get_pull_requests_query::Variables {
@@ -100,7 +100,12 @@ async fn refresh_pull_request() {
                 .json()
                 .await;
 
-            let data = response.unwrap().data.unwrap().repository_owner.unwrap();
+            let data = response.unwrap().data.unwrap();
+
+            let Some(data) = data.repository_owner else {
+                tracing::warn!("Failed to get repository_onwer. ignoring login {login}.");
+                continue 'login;
+            };
 
             for repo in data.repositories.nodes.unwrap() {
                 let repo = repo.unwrap();
