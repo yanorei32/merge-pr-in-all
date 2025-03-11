@@ -266,8 +266,10 @@ async fn main() {
     refresh_pull_request().await;
 
     tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
-        refresh_pull_request().await
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+            refresh_pull_request().await
+        }
     });
 
     let app = Router::new()
