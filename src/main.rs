@@ -85,10 +85,7 @@ async fn refresh_pull_request() {
                     repositories_cursor: repositories_cursor.to_string(),
                 });
 
-            let response: Result<
-                graphql_client::Response<get_pull_requests_query::ResponseData>,
-                _,
-            > = client
+            let Ok(response) = client
                 .post("https://api.github.com/graphql")
                 .header(
                     reqwest::header::AUTHORIZATION,
@@ -96,10 +93,14 @@ async fn refresh_pull_request() {
                 )
                 .json(&request_body)
                 .send()
-                .await
-                .unwrap()
-                .json()
-                .await;
+                .await else {
+                continue;
+            };
+            
+            let response: Result<
+                graphql_client::Response<get_pull_requests_query::ResponseData>,
+                _,
+            > = response.json().await;
 
             let data = response.unwrap().data.unwrap();
 
