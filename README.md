@@ -1,6 +1,7 @@
 # Merge-pr-in-all
 
-Automate "merge"
+There are cases where I want to merge all pull requests with the same title and the same author.
+It automates "merge". 
 
 
 ## Security Notice
