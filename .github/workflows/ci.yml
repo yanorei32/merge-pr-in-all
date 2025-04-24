@@ -80,7 +80,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build and Push
-        uses: docker/build-push-action@v6.15.0
+        uses: docker/build-push-action@v6.16.0
         if: "! startsWith(github.ref, 'refs/pull/')"
         with:
           context: .
@@ -92,7 +92,7 @@ jobs:
             ghcr.io/yanorei32/merge-pr-in-all:${{ steps.tagname.outputs.version }}
 
       - name: Build and Push
-        uses: docker/build-push-action@v6.15.0
+        uses: docker/build-push-action@v6.16.0
         if: "startsWith(github.ref, 'refs/pull/')"
         with:
           context: .
