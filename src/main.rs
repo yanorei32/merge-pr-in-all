@@ -102,7 +102,15 @@ async fn refresh_pull_request() {
                 _,
             > = response.json().await;
 
-            let data = response.unwrap().data.unwrap();
+            let Ok(response) = response else {
+                tracing::warn!("Failed to get response.");
+                continue;
+            };
+
+            let Some(data) = response.data else {
+                tracing::warn!("Got a empty response. ignoring login {login}.");
+                continue 'login;
+            };
 
             let Some(data) = data.repository_owner else {
                 tracing::warn!("Failed to get repository_onwer. ignoring login {login}.");
@@ -110,9 +118,14 @@ async fn refresh_pull_request() {
             };
 
             for repo in data.repositories.nodes.unwrap() {
-                let repo = repo.unwrap();
+                let Some(repo) = repo else {
+                    continue;
+                };
+
                 for pr in repo.pull_requests.nodes.unwrap() {
-                    let pr = pr.unwrap();
+                    let Some(pr) = pr else {
+                        continue;
+                    };
 
                     pull_requests.push(PullRequest {
                         login: pr.author.unwrap().login,
