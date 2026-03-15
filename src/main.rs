@@ -274,6 +274,9 @@ async fn main() {
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+        .unwrap();
+
     CLI_OPTIONS.set(Cli::parse()).unwrap();
 
     tracing::info!("Initializing...");
