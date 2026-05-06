@@ -211,7 +211,7 @@ async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, St
                 continue;
             };
 
-            if pr.title != octo_pr.title.unwrap() {
+            if pr.title != octo_pr.title {
                 tracing::warn!("PR title mismatch, maybe updated");
                 continue;
             }
