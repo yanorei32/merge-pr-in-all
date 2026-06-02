@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, DefaultHasher};
 
+use anyhow::Context;
 use axum::{
     Router,
     http::StatusCode,
@@ -48,7 +49,33 @@ struct PullRequest {
     login: String,
 }
 
-async fn refresh_pull_request() {
+async fn retry_nth_async<
+    T,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: std::error::Error,
+>(
+    mut f: F,
+    retry_count: usize,
+) -> Result<T, E> {
+    for n in 0..retry_count {
+        let result = f().await;
+
+        let is_last = n == retry_count - 1;
+
+        match result {
+            Ok(v) => return Ok(v),
+            Err(e) if is_last => return Err(e),
+            Err(e) => {
+                tracing::warn!("Error Occured: {e} retry {}/{retry_count}", n + 1);
+            }
+        }
+    }
+
+    panic!("do not run retry_nth with retry_count 0")
+}
+
+async fn refresh_pull_request() -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
         .user_agent("hyper-shadero-nekoneko/0.1.0")
         .build()
@@ -59,19 +86,31 @@ async fn refresh_pull_request() {
         .build()
         .unwrap();
 
+    let orgs = retry_nth_async(
+        async || {
+            octocrab
+                .current()
+                .list_org_memberships_for_authenticated_user()
+                .send()
+                .await
+        },
+        3,
+    )
+    .await
+    .with_context(|| "Failed to list orgs")?;
+
     // TODO: RyotaKが「100以上のOrgに所属している人なんて居ない」っていった！
-    let mut target_logins: Vec<_> = octocrab
-        .current()
-        .list_org_memberships_for_authenticated_user()
-        .send()
-        .await
-        .unwrap()
+    let mut target_logins: Vec<_> = orgs
         .items
         .into_iter()
         .map(|v| v.organization.login)
         .collect();
 
-    target_logins.push(octocrab.current().user().await.unwrap().login);
+    let current_user = retry_nth_async(async || octocrab.current().user().await, 3)
+        .await
+        .with_context(|| "Failed to get current user information")?;
+
+    target_logins.push(current_user.login);
 
     let mut pull_requests = vec![];
 
@@ -93,10 +132,11 @@ async fn refresh_pull_request() {
                 )
                 .json(&request_body)
                 .send()
-                .await else {
+                .await
+            else {
                 continue;
             };
-            
+
             let response: Result<
                 graphql_client::Response<get_pull_requests_query::ResponseData>,
                 _,
@@ -127,8 +167,12 @@ async fn refresh_pull_request() {
                         continue;
                     };
 
+                    let Some(author) = pr.author else {
+                        continue;
+                    };
+
                     pull_requests.push(PullRequest {
-                        login: pr.author.unwrap().login,
+                        login: author.login,
                         title: pr.title,
                         repository: repo.name_with_owner.clone(),
                         number: pr.number,
@@ -154,6 +198,8 @@ async fn refresh_pull_request() {
     );
 
     *PULL_REQUESTS.write().await = pull_requests;
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -180,19 +226,33 @@ async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, St
             .build()
             .unwrap();
 
+        let orgs = retry_nth_async(
+            async || {
+                octocrab
+                    .current()
+                    .list_org_memberships_for_authenticated_user()
+                    .send()
+                    .await
+            },
+            3,
+        )
+        .await
+        .with_context(|| "Failed to list orgs")
+        .unwrap();
+
         // TODO: RyotaKが100以上のOrgに所属している人なんて居ないっていった！
-        let mut target_logins: Vec<_> = octocrab
-            .current()
-            .list_org_memberships_for_authenticated_user()
-            .send()
-            .await
-            .unwrap()
+        let mut target_logins: Vec<_> = orgs
             .items
             .into_iter()
             .map(|v| v.organization.login)
             .collect();
 
-        target_logins.push(octocrab.current().user().await.unwrap().login);
+        let current_user = retry_nth_async(async || octocrab.current().user().await, 3)
+            .await
+            .with_context(|| "Failed to get current user information")
+            .unwrap();
+
+        target_logins.push(current_user.login);
 
         let prs = PULL_REQUESTS.read().await.clone();
 
@@ -218,12 +278,19 @@ async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, St
 
             let head_sha = octo_pr.head.sha;
 
-            let checks = octocrab
-                .checks(owner, repo)
-                .list_check_runs_for_git_ref(Commitish(head_sha.to_owned()))
-                .send()
-                .await
-                .unwrap();
+            let checks = retry_nth_async(
+                async || {
+                    octocrab
+                        .checks(owner, repo)
+                        .list_check_runs_for_git_ref(Commitish(head_sha.to_owned()))
+                        .send()
+                        .await
+                },
+                3,
+            )
+            .await
+            .with_context(|| "Failed to get current user information")
+            .unwrap();
 
             if checks.check_runs.is_empty() {
                 tracing::warn!("CI Doesn't configured");
@@ -246,15 +313,23 @@ async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, St
                 }
             }
 
-            match octocrab
-                .pulls(owner, repo)
-                .merge(pr.number as u64)
-                .title("Auto merge! (merge-pr-in-all)")
-                .sha(head_sha)
-                .method(octocrab::params::pulls::MergeMethod::Merge)
-                .send()
-                .await
-            {
+            let head_sha = &head_sha;
+
+            let merge_result = retry_nth_async(
+                async || {
+                    octocrab
+                        .pulls(owner, repo)
+                        .merge(pr.number as u64)
+                        .title("Auto merge! (merge-pr-in-all)")
+                        .sha(head_sha)
+                        .method(octocrab::params::pulls::MergeMethod::Merge)
+                        .send()
+                        .await
+                },
+                3,
+            ).await;
+
+            match merge_result {
                 Ok(_) => tracing::info!("Ready for merge!"),
                 Err(e) => tracing::error!("Error occured: {e:?}"),
             }
@@ -280,12 +355,15 @@ async fn main() {
     CLI_OPTIONS.set(Cli::parse()).unwrap();
 
     tracing::info!("Initializing...");
-    refresh_pull_request().await;
+
+    refresh_pull_request().await.unwrap();
 
     tokio::spawn(async {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
-            refresh_pull_request().await
+            if let Err(e) = refresh_pull_request().await {
+                tracing::warn!("Failed to refresh pull requests: {e}");
+            }
         }
     });
 
