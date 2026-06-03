@@ -271,12 +271,22 @@ async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, St
                 continue;
             };
 
-            if pr.title != octo_pr.title {
+            let Some(pr_title) = octo_pr.title else {
+                tracing::warn!("Failed to get title by PR");
+                continue;
+            };
+
+            if pr.title != pr_title {
                 tracing::warn!("PR title mismatch, maybe updated");
                 continue;
             }
 
-            let head_sha = octo_pr.head.sha;
+            let Some(pr_head) = octo_pr.head else {
+                tracing::warn!("Failed to HEAD by PR");
+                continue;
+            };
+
+            let head_sha = pr_head.sha;
 
             let checks = retry_nth_async(
                 async || {
