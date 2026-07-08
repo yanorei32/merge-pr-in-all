@@ -281,11 +281,7 @@ async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, St
                 continue;
             }
 
-            let Some(pr_head) = octo_pr.head else {
-                tracing::warn!("Failed to HEAD by PR");
-                continue;
-            };
-
+            let pr_head = octo_pr.head;
             let head_sha = pr_head.sha;
 
             let checks = retry_nth_async(
@@ -337,7 +333,8 @@ async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, St
                         .await
                 },
                 3,
-            ).await;
+            )
+            .await;
 
             match merge_result {
                 Ok(_) => tracing::info!("Ready for merge!"),
