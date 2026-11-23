@@ -305,14 +305,22 @@ async fn merge(Form(request): Form<AutoMergeRequest>) -> Result<&'static str, St
 
             for check in checks.check_runs {
                 let positive_statuses = ["success", "skipped", "neutral"];
-                let conclusion = check.conclusion.as_ref().unwrap().as_str();
+                let Some(conclusion) = check.conclusion.as_ref() else {
+                    tracing::warn!(
+                        "CI '{}' ({}) is not ready (null)",
+                        check.name,
+                        check.id,
+                    );
 
-                if !positive_statuses.contains(&conclusion) {
+                    continue 'pr_loop;
+                };
+
+                if !positive_statuses.contains(&conclusion.as_str()) {
                     tracing::warn!(
                         "CI '{}' ({}) is not ready ({})",
                         check.name,
                         check.id,
-                        conclusion
+                        conclusion.as_str(),
                     );
 
                     continue 'pr_loop;
